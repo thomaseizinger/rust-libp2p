@@ -26,11 +26,7 @@
 use crate::RequestId;
 use crate::codec::RequestResponseCodec;
 
-use futures::{
-    channel::oneshot,
-    future::BoxFuture,
-    prelude::*,
-};
+use futures::{channel::oneshot, future::BoxFuture, prelude::*, AsyncWriteExt};
 use libp2p_core::{
     upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo},
 };
@@ -113,6 +109,7 @@ where
                     write.await?;
                 }
             }
+            io.close().await?;
             Ok(())
         }.boxed()
     }
@@ -156,6 +153,7 @@ where
         async move {
             let write = self.codec.write_request(&protocol, &mut io, self.request);
             write.await?;
+            io.close().await?;
             let read = self.codec.read_response(&protocol, &mut io);
             let response = read.await?;
             Ok(response)

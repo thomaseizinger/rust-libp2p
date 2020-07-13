@@ -116,6 +116,64 @@ fn ping_protocol() {
     let () = async_std::task::block_on(peer2);
 }
 
+#[test]
+fn dropping_channel_closes_substream() {
+    let ping = Ping("ping".to_string().into_bytes());
+
+    let protocols = iter::once((PingProtocol(), ProtocolSupport::Full));
+    let cfg = RequestResponseConfig::default();
+
+    let (peer1_id, trans) = mk_transport();
+    let ping_proto1 = RequestResponse::new(PingCodec(), protocols.clone(), cfg.clone());
+    let mut swarm1 = Swarm::new(trans, ping_proto1, peer1_id.clone());
+
+    let (peer2_id, trans) = mk_transport();
+    let ping_proto2 = RequestResponse::new(PingCodec(), protocols, cfg);
+    let mut swarm2 = Swarm::new(trans, ping_proto2, peer2_id.clone());
+
+    let (mut tx, mut rx) = mpsc::channel::<Multiaddr>(1);
+
+    let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
+    Swarm::listen_on(&mut swarm1, addr).unwrap();
+
+    let peer1 = async move {
+        while let Some(_) = swarm1.next().now_or_never() {}
+
+        let l = Swarm::listeners(&swarm1).next().unwrap();
+        tx.send(l.clone()).await.unwrap();
+
+        loop {
+            match swarm1.next().await {
+                RequestResponseEvent::Message {
+                    message: RequestResponseMessage::Request { channel, .. },
+                    ..
+                } => {
+                    drop(channel);
+                },
+                e => panic!("Peer1: Unexpected event: {:?}", e)
+            }
+        }
+    };
+
+    let peer2 = async move {
+        let addr = rx.next().await.unwrap();
+        swarm2.add_address(&peer1_id, addr.clone());
+        let _ = swarm2.send_request(&peer1_id, ping.clone());
+
+        loop {
+            match swarm2.next().await {
+                RequestResponseEvent::OutboundFailure { error: OutboundFailure::ConnectionClosed, .. } => {
+                    return;
+                },
+                e => panic!("Peer2: Unexpected event: {:?}", e)
+            }
+        }
+    };
+
+    async_std::task::spawn(Box::pin(peer1));
+    let () = async_std::task::block_on(peer2);
+}
+
 fn mk_transport() -> (PeerId, Boxed<(PeerId, StreamMuxerBox), io::Error>) {
     let id_keys = identity::Keypair::generate_ed25519();
     let peer_id = id_keys.public().into_peer_id();
